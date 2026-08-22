@@ -29,17 +29,15 @@ use store::{Project, Store};
 
 const AFTER_HELP: &str = "\
 Examples:
-  try
-  try <name>
-  try <name> <source>
-  try https://<host>/<user>/<repo>.git
-  try git@<host>:<user>/<repo>.git
-  try https://<host>/<user>/<repo>/pull/<number>
-  try ./<path>
-  try <name> ./<path>
-  try --init fish
-
-See README.md for what each form does.";
+  try                                           browse every project
+  try notes                                     enter <root>/notes
+  try https://github.com/goofansu/try.git       clone it as goofansu-try
+  try git@github.com:goofansu/try.git           the same, over ssh
+  try https://github.com/goofansu/try/pull/123  clone it as goofansu-try-pr-123
+  try ./                                        worktree goofansu/try as try
+  try ../                                       the same, from goofansu/try/src
+  try patch ./                                  the same worktree, named patch
+  try --init fish                               print the fish function to eval";
 
 #[derive(Parser)]
 #[command(
