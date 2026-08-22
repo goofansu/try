@@ -26,16 +26,6 @@ in
       description = "The try package to use.";
     };
 
-    path = lib.mkOption {
-      type = lib.types.nullOr lib.types.str;
-      default = null;
-      example = "~/src/scratch";
-      description = ''
-        Directory that holds the projects, exported as TRY_PATH.
-        Null leaves try with its default of ~/try.
-      '';
-    };
-
     enableFishIntegration = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -83,8 +73,6 @@ in
     in
     {
       home.packages = [ cfg.package ];
-
-      home.sessionVariables = lib.mkIf (cfg.path != null) { TRY_PATH = cfg.path; };
 
       programs.fish.functions = lib.mkIf cfg.enableFishIntegration {
         try = {

@@ -173,7 +173,6 @@ imports = [ try.homeModules.default ];
 
 programs.try = {
   enable = true;
-  # path = "~/src/scratch";        # optional, sets TRY_PATH
   # enableFishIntegration = true;  # default
   # enableBashIntegration = true;  # default false
   # enableZshIntegration = true;   # default false
@@ -183,6 +182,11 @@ programs.try = {
 The module installs the package and defines the `try` function itself, so there
 is no need to eval `try --init` as well. It refers to the binary by its store
 path rather than looking it up on `PATH`.
+
+The module does not set `TRY_PATH`. To use a root other than `~/try`, export it
+from your shell — `home.sessionVariables` reaches only shells started after the
+generation is activated, so a long-running terminal or multiplexer keeps the old
+value until it restarts.
 
 Run it without installing:
 
