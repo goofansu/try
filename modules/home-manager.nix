@@ -7,42 +7,43 @@
 {
   config,
   lib,
-  pkgs,
   ...
 }:
 
 let
   cfg = config.programs.try;
   try = lib.getExe cfg.package;
+
+  mkIntegrationOption =
+    mk:
+    mk {
+      inherit config;
+      extraDescription = ''
+        This defines the `try` function that performs the directory change. The
+        binary alone cannot do it, because a process cannot change the working
+        directory of the shell that started it.
+      '';
+    };
 in
 {
   options.programs.try = {
     enable = lib.mkEnableOption "try, a project directory jumper";
 
+    # No default: nixpkgs already has an unrelated package named `try`, and it
+    # declares `meta.mainProgram = "try"`, so defaulting to `pkgs.try` would
+    # silently install and call the wrong binary. `homeModules.default` in the
+    # flake supplies this; a bare import of this module has to set it.
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.try;
-      defaultText = lib.literalExpression "pkgs.try";
+      example = lib.literalExpression "try.packages.\${pkgs.system}.try";
       description = "The try package to use.";
     };
 
-    enableFishIntegration = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = "Define the fish `try` function that changes directory.";
-    };
+    enableBashIntegration = mkIntegrationOption lib.hm.shell.mkBashIntegrationOption;
 
-    enableBashIntegration = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Define the bash `try` function that changes directory.";
-    };
+    enableFishIntegration = mkIntegrationOption lib.hm.shell.mkFishIntegrationOption;
 
-    enableZshIntegration = lib.mkOption {
-      type = lib.types.bool;
-      default = false;
-      description = "Define the zsh `try` function that changes directory.";
-    };
+    enableZshIntegration = mkIntegrationOption lib.hm.shell.mkZshIntegrationOption;
   };
 
   config = lib.mkIf cfg.enable (

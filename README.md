@@ -173,9 +173,9 @@ imports = [ try.homeModules.default ];
 
 programs.try = {
   enable = true;
-  # enableFishIntegration = true;  # default
-  # enableBashIntegration = true;  # default false
-  # enableZshIntegration = true;   # default false
+  # enableBashIntegration = false;  # defaults to home.shell.enableBashIntegration
+  # enableFishIntegration = false;  # defaults to home.shell.enableFishIntegration
+  # enableZshIntegration = false;   # defaults to home.shell.enableZshIntegration
 };
 ```
 
@@ -196,6 +196,10 @@ nix run github:goofansu/try -- --help
 
 Other outputs: `packages.<system>.try`, `overlays.default`, and a `devShell`
 with the Rust toolchain.
+
+`programs.try.package` has no default, because nixpkgs already has an unrelated
+package named `try`. The module above sets it for you; importing
+`modules/home-manager.nix` on its own means setting it yourself.
 
 ## Building without Nix
 
