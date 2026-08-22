@@ -113,3 +113,114 @@ fn destination() -> Option<ManuallyDrop<File>> {
     file.metadata().ok()?;
     Some(file)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::os::fd::AsRawFd;
+
+    use crate::testing::{EnvGuard, TempDir};
+
+    #[test]
+    fn every_supported_shell_has_an_init() {
+        for shell in ["fish", "bash", "zsh"] {
+            assert!(init(shell).is_ok(), "{shell}");
+        }
+    }
+
+    /// `$SHELL` is a path, and people type `try --init $SHELL`.
+    #[test]
+    fn a_shell_may_be_given_as_a_path_or_in_capitals() {
+        assert!(init("/usr/local/bin/fish").is_ok());
+        assert!(init("/bin/BASH").is_ok());
+        assert!(init("Zsh").is_ok());
+    }
+
+    #[test]
+    fn an_unsupported_shell_says_which_ones_work() {
+        let err = init("nushell").unwrap_err().to_string();
+        assert!(err.contains("nushell"), "{err}");
+        assert!(err.contains("fish, bash, zsh"), "{err}");
+        assert!(init("").is_err());
+    }
+
+    /// Both halves of the protocol live in this file so they cannot drift: the
+    /// function has to pass the descriptor the binary reads.
+    #[test]
+    fn both_shell_functions_speak_the_protocol() {
+        for script in [FISH_INIT, POSIX_INIT] {
+            assert!(script.contains("TRY_FD=3"), "{script}");
+            assert!(script.contains("3>"), "{script}");
+            assert!(script.contains("cd "), "{script}");
+        }
+    }
+
+    /// Each function shadows the binary it calls, so it has to reach past
+    /// itself: fish resolves the path first, POSIX shells use `command`.
+    #[test]
+    fn neither_shell_function_calls_itself() {
+        assert!(FISH_INIT.contains("command -s try"));
+        assert!(POSIX_INIT.contains("command try"));
+    }
+
+    #[test]
+    fn the_posix_function_names_the_shell_it_was_asked_for() {
+        assert!(POSIX_INIT.contains("{shell}"), "the placeholder is there");
+        let bash = POSIX_INIT.replace("{shell}", "bash");
+        assert!(bash.contains(r#"eval "$(try --init bash)""#), "{bash}");
+        assert!(!bash.contains("{shell}"));
+    }
+
+    #[test]
+    fn report_writes_the_path_to_the_descriptor() {
+        let dir = TempDir::new("report");
+        let path = dir.join("dest");
+        let sink = File::create(&path).unwrap();
+
+        let mut env = EnvGuard::new();
+        env.set("TRY_FD", sink.as_raw_fd().to_string());
+        report(Path::new("/home/ada/try/redis")).unwrap();
+        drop(env);
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "/home/ada/try/redis\n"
+        );
+        // The descriptor belongs to the caller, so report must not have closed
+        // it: writing again still works.
+        drop(sink);
+    }
+
+    /// Without the shell function there is no descriptor listening, so the
+    /// path goes to stdout instead of being lost.
+    #[test]
+    fn report_falls_back_to_stdout_without_a_descriptor() {
+        let mut env = EnvGuard::new();
+        env.remove("TRY_FD");
+        assert!(report(Path::new("/home/ada/try/redis")).is_ok());
+    }
+
+    #[test]
+    fn report_falls_back_when_the_descriptor_is_unusable() {
+        for raw in ["", "  ", "not-a-number", "-1", "1024"] {
+            let mut env = EnvGuard::new();
+            env.set("TRY_FD", raw);
+            assert!(report(Path::new("/home/ada/try/redis")).is_ok(), "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn a_descriptor_may_be_written_with_surrounding_space() {
+        let dir = TempDir::new("report-space");
+        let path = dir.join("dest");
+        let sink = File::create(&path).unwrap();
+
+        let mut env = EnvGuard::new();
+        env.set("TRY_FD", format!(" {} ", sink.as_raw_fd()));
+        report(Path::new("/tmp/x")).unwrap();
+        drop(env);
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "/tmp/x\n");
+    }
+}

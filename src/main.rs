@@ -23,6 +23,8 @@ mod picker;
 mod shell;
 mod source;
 mod store;
+#[cfg(test)]
+mod testing;
 
 use source::Source;
 use store::{Project, Store};
@@ -217,5 +219,136 @@ fn plural(n: i64, unit: &str) -> String {
         format!("1 {unit} ago")
     } else {
         format!("{n} {unit}s ago")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::path::PathBuf;
+    use std::time::SystemTime;
+
+    use chrono::TimeZone;
+    use clap::CommandFactory;
+
+    /// A project last modified at noon on `date`, which is far enough from
+    /// either end of the day that no timezone turns it into the day before.
+    fn dated(name: &str, date: NaiveDate) -> Project {
+        let noon = date
+            .and_hms_opt(12, 0, 0)
+            .and_then(|naive| Local.from_local_datetime(&naive).single())
+            .expect("the date has a noon");
+        Project {
+            name: name.to_string(),
+            path: PathBuf::from("/projects").join(name),
+            mtime: Some(SystemTime::from(noon)),
+        }
+    }
+
+    fn undated(name: &str) -> Project {
+        Project {
+            name: name.to_string(),
+            path: PathBuf::from("/projects").join(name),
+            mtime: None,
+        }
+    }
+
+    fn day(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).expect("a real date")
+    }
+
+    /// `age` counts whole days, so every bucket is stated as a day count away
+    /// from one fixed "today".
+    fn age_after(days: i64) -> String {
+        let today = day(2026, 6, 15);
+        let then = today - chrono::Duration::days(days);
+        age(&dated("p", then), today)
+    }
+
+    #[test]
+    fn the_command_line_is_well_formed() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn arguments_parse_into_their_fields() {
+        let cli = Cli::try_parse_from(["try", "notes"]).unwrap();
+        assert!(!cli.path);
+        assert_eq!(cli.init, None);
+        assert_eq!(cli.args, vec!["notes".to_string()]);
+
+        let cli = Cli::try_parse_from(["try", "--path"]).unwrap();
+        assert!(cli.path);
+
+        let cli = Cli::try_parse_from(["try", "--init", "fish"]).unwrap();
+        assert_eq!(cli.init.as_deref(), Some("fish"));
+
+        let cli = Cli::try_parse_from(["try", "patch", "./"]).unwrap();
+        assert_eq!(cli.args, vec!["patch".to_string(), "./".to_string()]);
+    }
+
+    #[test]
+    fn init_wants_a_shell_name() {
+        assert!(Cli::try_parse_from(["try", "--init"]).is_err());
+    }
+
+    #[test]
+    fn cancelled_reads_as_cancelled() {
+        assert_eq!(Cancelled.to_string(), "cancelled");
+    }
+
+    #[test]
+    fn an_undated_project_has_no_age() {
+        assert_eq!(age(&undated("p"), day(2026, 6, 15)), "");
+    }
+
+    #[test]
+    fn ages_within_the_month_are_counted_in_days() {
+        assert_eq!(age_after(0), "today");
+        assert_eq!(age_after(1), "yesterday");
+        assert_eq!(age_after(2), "2 days ago");
+        assert_eq!(age_after(29), "29 days ago");
+    }
+
+    #[test]
+    fn ages_past_a_month_are_counted_in_months_then_years() {
+        assert_eq!(age_after(30), "1 month ago");
+        assert_eq!(age_after(59), "1 month ago");
+        assert_eq!(age_after(60), "2 months ago");
+        assert_eq!(age_after(364), "12 months ago");
+        assert_eq!(age_after(365), "1 year ago");
+        assert_eq!(age_after(400), "1 year ago");
+        assert_eq!(age_after(730), "2 years ago");
+    }
+
+    /// A clock that is behind the filesystem, or a project touched a moment
+    /// into tomorrow, must not read as a negative age.
+    #[test]
+    fn a_future_date_reads_as_today() {
+        assert_eq!(age_after(-1), "today");
+        assert_eq!(age_after(-500), "today");
+    }
+
+    #[test]
+    fn plural_agrees_with_its_number() {
+        assert_eq!(plural(1, "month"), "1 month ago");
+        assert_eq!(plural(2, "month"), "2 months ago");
+        assert_eq!(plural(0, "year"), "0 years ago");
+    }
+
+    #[test]
+    fn rows_pair_each_name_with_its_age() {
+        let today = day(2026, 6, 15);
+        let projects = vec![
+            dated("redis", today - chrono::Duration::days(1)),
+            undated("notes"),
+        ];
+        let rows = rows(&projects, today);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].label, "redis");
+        assert_eq!(rows[0].hint, "yesterday");
+        assert_eq!(rows[1].label, "notes");
+        assert_eq!(rows[1].hint, "");
     }
 }

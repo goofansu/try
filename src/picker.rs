@@ -381,3 +381,270 @@ fn highlight(label: &str, positions: &[u32], base: Style) -> Vec<Span<'static>> 
     }
     spans
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+
+    fn item(label: &str, hint: &str) -> Item {
+        Item {
+            label: label.to_string(),
+            hint: hint.to_string(),
+        }
+    }
+
+    fn items(labels: &[&str]) -> Vec<Item> {
+        labels.iter().map(|label| item(label, "")).collect()
+    }
+
+    fn matches(items: &[Item], query: &str) -> Vec<usize> {
+        let mut matcher = Matcher::new(Config::DEFAULT);
+        filter(items, query, &mut matcher)
+            .into_iter()
+            .map(|hit| hit.index)
+            .collect()
+    }
+
+    /// The text of a line, with the styling dropped.
+    fn text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|span| span.content.as_ref()).collect()
+    }
+
+    /// Every row of a rendered frame, trailing blanks trimmed.
+    fn screen(buffer: &Buffer) -> Vec<String> {
+        (0..buffer.area.height)
+            .map(|y| {
+                let row: String = (0..buffer.area.width)
+                    .filter_map(|x| buffer.cell((x, y)))
+                    .map(|cell| cell.symbol())
+                    .collect();
+                row.trim_end().to_string()
+            })
+            .collect()
+    }
+
+    fn draw(query: &str, list: &[Item], selected: usize, offset: usize) -> Buffer {
+        let width = label_width(list);
+        let mut matcher = Matcher::new(Config::DEFAULT);
+        let order = filter(list, query, &mut matcher);
+        let height = u16::try_from(list.len().clamp(1, MAX_VISIBLE) + CHROME).unwrap();
+        let mut term = Terminal::new(TestBackend::new(60, height)).unwrap();
+        term.draw(|frame| render(frame, query, list, &order, selected, offset, width))
+            .unwrap();
+        term.backend().buffer().clone()
+    }
+
+    #[test]
+    fn an_empty_query_keeps_every_row_in_order() {
+        let list = items(&["redis", "notes", "try"]);
+        let hits = filter(&list, "", &mut Matcher::new(Config::DEFAULT));
+        assert_eq!(
+            hits.iter().map(|hit| hit.index).collect::<Vec<_>>(),
+            [0, 1, 2]
+        );
+        assert!(hits.iter().all(|hit| hit.positions.is_empty()));
+    }
+
+    #[test]
+    fn a_query_keeps_only_what_it_matches() {
+        let list = items(&["redis", "notes", "rust-docs"]);
+        assert_eq!(matches(&list, "red"), [0]);
+        assert_eq!(matches(&list, "zzz"), Vec::<usize>::new());
+    }
+
+    /// Fuzzy, so the letters only have to appear in order.
+    #[test]
+    fn a_query_matches_letters_spread_through_the_label() {
+        let list = items(&["goofansu-try-pr-123"]);
+        assert_eq!(matches(&list, "gtry"), [0]);
+        assert_eq!(matches(&list, "pr123"), [0]);
+    }
+
+    #[test]
+    fn a_lowercase_query_ignores_case() {
+        let list = items(&["Redis"]);
+        assert_eq!(matches(&list, "red"), [0]);
+    }
+
+    #[test]
+    fn better_matches_come_first() {
+        let list = items(&["my-redis-fork", "redis"]);
+        assert_eq!(
+            matches(&list, "redis"),
+            [1, 0],
+            "the whole label beats a fragment of one"
+        );
+    }
+
+    /// The positions are what the row highlights, so they have to be usable as
+    /// a sorted, duplicate-free index into the label.
+    #[test]
+    fn matched_positions_are_sorted_and_unique() {
+        let list = items(&["goofansu-try"]);
+        let hits = filter(&list, "try", &mut Matcher::new(Config::DEFAULT));
+        let positions = &hits[0].positions;
+        assert!(!positions.is_empty());
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(positions.iter().all(|&i| (i as usize) < 12));
+    }
+
+    #[test]
+    fn the_hint_column_clears_the_longest_label_that_has_one() {
+        let list = vec![
+            item("short", "today"),
+            item("a-much-longer-name", ""),
+            item("middling", "yesterday"),
+        ];
+        assert_eq!(
+            label_width(&list),
+            "middling".len(),
+            "a row with no hint does not widen the column"
+        );
+        assert_eq!(label_width(&items(&["anything"])), 0);
+        assert_eq!(label_width(&[]), 0);
+    }
+
+    #[test]
+    fn the_hint_column_counts_characters_not_bytes() {
+        let list = vec![item("réseau", "today")];
+        assert_eq!(label_width(&list), 6);
+    }
+
+    #[test]
+    fn moving_down_stops_at_the_last_row() {
+        assert_eq!(next(0, 3), 1);
+        assert_eq!(next(1, 3), 2);
+        assert_eq!(next(2, 3), 2);
+        assert_eq!(next(0, 0), 0, "an empty list has nowhere to go");
+    }
+
+    #[test]
+    fn an_unmatched_label_is_one_plain_run() {
+        let spans = highlight("redis", &[], TEXT);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "redis");
+        assert_eq!(spans[0].style, TEXT);
+    }
+
+    #[test]
+    fn highlighting_splits_the_label_into_runs() {
+        let spans = highlight("redis", &[0, 1, 2], TEXT);
+        let runs: Vec<(&str, bool)> = spans
+            .iter()
+            .map(|span| (span.content.as_ref(), span.style == TEXT.patch(MATCH)))
+            .collect();
+        assert_eq!(runs, [("red", true), ("is", false)]);
+
+        let spans = highlight("redis", &[1, 3], TEXT);
+        let runs: Vec<&str> = spans.iter().map(|span| span.content.as_ref()).collect();
+        assert_eq!(runs, ["r", "e", "d", "i", "s"]);
+    }
+
+    #[test]
+    fn highlighting_a_whole_label_is_one_matched_run() {
+        let spans = highlight("try", &[0, 1, 2], TEXT);
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].content, "try");
+        assert_eq!(spans[0].style, TEXT.patch(MATCH));
+    }
+
+    /// The positions are character offsets, not byte offsets.
+    #[test]
+    fn highlighting_counts_characters_not_bytes() {
+        let spans = highlight("réseau", &[0, 1], TEXT);
+        assert_eq!(spans[0].content, "ré");
+        assert_eq!(spans[1].content, "seau");
+    }
+
+    #[test]
+    fn a_row_marks_the_one_you_are_on() {
+        assert!(text(&row(&item("redis", ""), true, 0, &[])).starts_with(" > "));
+        assert!(text(&row(&item("redis", ""), false, 0, &[])).starts_with("   "));
+    }
+
+    #[test]
+    fn a_row_pads_its_label_out_to_the_hint_column() {
+        let line = row(&item("try", "today"), false, 8, &[]);
+        assert_eq!(text(&line), "   try       today");
+
+        let line = row(&item("try", ""), false, 8, &[]);
+        assert_eq!(text(&line), "   try", "no hint, no padding");
+    }
+
+    #[test]
+    fn the_frame_shows_the_query_the_rows_and_the_help() {
+        let list = vec![item("redis", "today"), item("notes", "3 days ago")];
+        let screen = screen(&draw("", &list, 0, 0));
+        assert_eq!(screen[0], " >");
+        assert_eq!(screen[1], " > redis  today");
+        assert_eq!(screen[2], "   notes  3 days ago");
+        assert!(screen[3].contains("enter select"), "{:?}", screen[3]);
+    }
+
+    #[test]
+    fn the_frame_echoes_what_was_typed() {
+        let list = vec![item("redis", "")];
+        let screen = screen(&draw("red", &list, 0, 0));
+        assert_eq!(screen[0], " > red");
+    }
+
+    #[test]
+    fn a_query_that_matches_nothing_says_so() {
+        let list = vec![item("redis", ""), item("notes", "")];
+        let screen = screen(&draw("zzz", &list, 0, 0));
+        assert_eq!(screen[1], "   no matches");
+        assert_eq!(screen[2], "");
+    }
+
+    /// The bar spans the whole width, not just the text, so it is painted over
+    /// the row after the rows are drawn.
+    #[test]
+    fn the_selected_row_is_a_full_width_bar() {
+        let list = vec![item("redis", ""), item("notes", "")];
+        let buffer = draw("", &list, 1, 0);
+        let bar_row = 2;
+        for x in 0..buffer.area.width {
+            assert_eq!(
+                buffer.cell((x, bar_row)).unwrap().bg,
+                theme::SURFACE,
+                "column {x} of the selected row"
+            );
+        }
+        for x in 0..buffer.area.width {
+            assert_ne!(buffer.cell((x, 1)).unwrap().bg, theme::SURFACE);
+        }
+    }
+
+    /// The list is taller than the viewport, so it scrolls: the offset is the
+    /// first row drawn.
+    #[test]
+    fn a_long_list_is_drawn_from_the_offset() {
+        let labels: Vec<String> = (0..20).map(|n| format!("project-{n:02}")).collect();
+        let list: Vec<Item> = labels.iter().map(|l| item(l, "")).collect();
+
+        let screen = screen(&draw("", &list, 12, 8));
+        assert_eq!(screen.len(), MAX_VISIBLE + CHROME);
+        assert_eq!(screen[1], "   project-08");
+        assert_eq!(screen[5], " > project-12", "the selected row is marked");
+        assert_eq!(screen[10], "   project-17");
+    }
+
+    #[test]
+    fn the_matched_characters_stand_out() {
+        let list = vec![item("redis", "")];
+        let buffer = draw("red", &list, 0, 0);
+        // "   redis": the first three letters matched.
+        for (x, matched) in [(3, true), (4, true), (5, true), (6, false), (7, false)] {
+            let cell = buffer.cell((x, 1)).unwrap();
+            assert_eq!(
+                cell.fg == theme::YELLOW,
+                matched,
+                "column {x} ({})",
+                cell.symbol()
+            );
+        }
+    }
+}
