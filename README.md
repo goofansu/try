@@ -1,6 +1,6 @@
 # try
 
-Find, create and jump into project directories.
+Find, create and jump into project directories. Inspired by [tobi/try](https://github.com/tobi/try).
 
 ## Run via Nix
 
