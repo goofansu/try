@@ -139,23 +139,37 @@ fn browse(store: &Store) -> Result<()> {
 }
 
 /// Handles every naming form. The name is settled first, and an existing
-/// project of that name wins outright — the source is not even consulted.
+/// project of that name wins outright: the source is not resolved at all, and
+/// a note says so, because the alternative is landing in an old project that
+/// looks as though it was just made from what was typed.
 fn enter(store: &Store, name: Option<&str>, arg: Option<&str>) -> Result<()> {
-    // A typed name always wins, so the source is worth resolving only when the
-    // name has to come from it.
-    let (name, source) = match (name, arg) {
-        (Some(name), None) => (store::clean_name(name)?, None),
-        (Some(name), Some(arg)) => (store::clean_name(name)?, Some(Source::resolve(arg)?)),
-        (None, Some(arg)) => {
+    // A typed name settles the name on its own, so the source is left
+    // unresolved until the project turns out not to exist.
+    let (name, resolved) = match name {
+        Some(name) => (store::clean_name(name)?, None),
+        None => {
+            let arg = arg.expect("run() never calls enter with neither");
             let source = Source::resolve(arg)?;
             (source.name()?, Some(source))
         }
-        (None, None) => unreachable!("run() never calls enter with neither"),
     };
 
     if let Some(path) = store.find(&name) {
+        // Whether the source is a valid one, an unrelated one or nonsense
+        // makes no difference here, so the note does not depend on it either.
+        if let Some(arg) = arg {
+            eprintln!("{name} already exists, so {arg} was not used");
+        }
         return shell::report(&path);
     }
+
+    // Only now is the source worth the work: a name that came from one is
+    // already resolved, and a typed name has left it until here.
+    let source = match (resolved, arg) {
+        (Some(source), _) => Some(source),
+        (None, Some(arg)) => Some(Source::resolve(arg)?),
+        (None, None) => None,
+    };
 
     let path = match &source {
         Some(source) => {
